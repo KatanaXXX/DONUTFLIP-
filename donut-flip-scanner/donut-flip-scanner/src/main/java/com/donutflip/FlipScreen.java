@@ -4,40 +4,47 @@ import com.donutflip.Analyzer.Analysis;
 import com.donutflip.Analyzer.HistoryRow;
 import com.donutflip.Analyzer.Rec;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
-import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class FlipScreen extends Screen {
     private enum Tab {
-        BEST("Best Flips"), AVOID("Avoid"), HISTORY("Market History"), SETTINGS("Settings");
+        FLIPS("Flips"), AVOID("Avoid"), MARKET("Market"), WATCH("Watch"), TOOLS("Tools"), SETTINGS("Settings");
         final String title;
         Tab(String t) { title = t; }
     }
 
-    // ARGB colors
-    private static final int C_PANEL = 0xF0121418, C_HEAD = 0xFF1B1F27, C_ROW = 0xFF181B21, C_ROW_ALT = 0xFF1D2128;
-    private static final int C_TEXT = 0xFFFFFFFF, C_DIM = 0xFF8B93A1, C_EST = 0xFF6FC3FF;
-    private static final int C_GOOD = 0xFF4ADE80, C_BAD = 0xFFF87171, C_WARN = 0xFFFBBF24, C_ACCENT = 0xFFF59E0B;
+    static float chromeAlpha = 1f;
+    // ARGB palette (blue theme)
+    static final int BG = 0xF00B1220, ROW = 0xFF14203A, ROW2 = 0xFF172646, FIELD = 0xFF0F1830;
+    static final int ACCENT = 0xFF3B9CFF, ACCENT_DIM = 0xFF1D4E8F;
+    static final int TEXT = 0xFFEAF2FF, DIM = 0xFF7F93B5, EST = 0xFF7DD3FC;
+    static final int GOOD = 0xFF4ADE80, BAD = 0xFFF87171, WARN = 0xFFFBBF24;
 
     private static final double[] PROFITS = {0, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000};
     private static final int[] CONFS = {0, 25, 40, 50, 60, 70, 80, 90};
+    private static final int ROW_H = 26;
 
-    private Tab tab = Tab.BEST;
+    private Tab tab = Tab.FLIPS;
     private String query = "";
-    private EditBox search;
     private int scroll = 0;
-    private int px, py, pw, ph, listTop, listBottom;
+    private int px, py, pw, ph, listTop, listBottom, tabW;
+    private float indX = -1;
+    private final long openedAt = System.currentTimeMillis();
+    private long contentAt = System.currentTimeMillis();
+    private boolean confirmLive = false;
+
+    private final List<int[]> fields = new ArrayList<>();
+    private EditBox calcBuy, calcSell, logBox, timerMin, timerLabel, watchName, watchMax, kwBox;
 
     private List<Analysis> analyses = List.of();
     private List<HistoryRow> history = List.of();
+    private List<String> watchInfo = List.of();
     private long now = System.currentTimeMillis();
 
     public FlipScreen() { super(Component.literal("Donut Flip Scanner")); }
@@ -47,90 +54,195 @@ public class FlipScreen extends Screen {
 
     @Override
     protected void init() {
-        pw = Math.min(width - 16, 680);
-        ph = height - 16;
+        pw = Math.min(width - 16, 430);
+        ph = Math.min(height - 16, 272);
         px = (width - pw) / 2;
-        py = 8;
+        py = (height - ph) / 2;
+        tabW = (pw - 16) / Tab.values().length;
         recompute();
         rebuild();
+    }
+
+    @Override
+    public void removed() {
+        cfg().save();
+        super.removed();
     }
 
     private void recompute() {
         now = System.currentTimeMillis();
         analyses = Analyzer.analyze(store().records, cfg(), now);
         history = Analyzer.history(store().records, cfg(), now);
+        List<String> wi = new ArrayList<>();
+        for (Config.WatchItem w : cfg().watch) {
+            double best = Double.MAX_VALUE;
+            int n = 0;
+            for (PriceRecord r : store().records) {
+                if (!r.item().toLowerCase(Locale.ROOT).contains(w.name.toLowerCase(Locale.ROOT))) continue;
+                if (Analyzer.ageDays(r, now, cfg().maxAgeDays) > cfg().maxAgeDays) continue;
+                n++;
+                best = Math.min(best, r.unitPrice());
+            }
+            wi.add(n == 0 ? "no recent records" : "lowest seen ~" + money(best) + "/unit (" + n + " rec)");
+        }
+        watchInfo = wi;
         scroll = 0;
+    }
+
+    // ---------- widgets ----------
+    private UiButton btn(int x, int y, int w, int h, String label, Runnable r) {
+        UiButton b = new UiButton(x, y, w, h, label, r, false, false);
+        addRenderableWidget(b);
+        return b;
+    }
+
+    private EditBox box(int x, int y, int w, String hint, String val) {
+        EditBox b = new EditBox(font, x + 5, y + 4, w - 10, 10, Component.literal(hint));
+        b.setBordered(false);
+        b.setMaxLength(48);
+        b.setHint(Component.literal(hint));
+        b.setValue(val);
+        fields.add(new int[]{x, y, w, 16});
+        addRenderableWidget(b);
+        return b;
+    }
+
+    private void switchTab(Tab t) {
+        tab = t;
+        scroll = 0;
+        contentAt = System.currentTimeMillis();
+        rebuild();
     }
 
     private void rebuild() {
         clearWidgets();
-        int tabW = (pw - 16 - 12) / 4;
+        fields.clear();
         for (int i = 0; i < Tab.values().length; i++) {
             Tab t = Tab.values()[i];
-            Button b = Button.builder(Component.literal((t == tab ? "> " : "") + t.title), btn -> { tab = t; scroll = 0; rebuild(); })
-                    .bounds(px + 8 + i * (tabW + 4), py + 24, tabW, 18).build();
-            addRenderableWidget(b);
+            addRenderableWidget(new UiButton(px + 8 + i * tabW, py + 24, tabW - 2, 16, t.title, () -> switchTab(t), true, t == tab));
         }
-        listTop = py + 88;
+        if (indX < 0) indX = px + 8 + tab.ordinal() * tabW;
+        listTop = py + 82;
         listBottom = py + ph - 8;
 
-        if (tab == Tab.SETTINGS) { buildSettings(); return; }
+        switch (tab) {
+            case FLIPS, AVOID -> buildToolbar(true);
+            case MARKET -> buildToolbar(false);
+            case WATCH -> buildWatch();
+            case TOOLS -> buildTools();
+            case SETTINGS -> buildSettings();
+        }
+    }
 
-        int avail = pw - 16 - 16;
-        int y = py + 48;
-        int x = px + 8;
-        int wSearch = (int) (avail * 0.30), wSort = (int) (avail * 0.19), wProfit = (int) (avail * 0.21),
-                wConf = (int) (avail * 0.18), wReload = avail - wSearch - wSort - wProfit - wConf;
-
-        search = new EditBox(font, x, y, wSearch, 16, Component.literal("Search"));
-        search.setHint(Component.literal("Search item..."));
-        search.setValue(query);
-        search.setResponder(s -> { query = s; scroll = 0; });
-        addRenderableWidget(search);
-        x += wSearch + 4;
-
-        addRenderableWidget(Button.builder(Component.literal("Sort: " + cfg().sort), b -> {
+    private void buildToolbar(boolean full) {
+        int x = px + 8, y = py + 46, avail = pw - 16;
+        int wReload = 52;
+        if (!full) {
+            EditBox s = box(x, y, avail - wReload - 4, "Search item...", query);
+            s.setResponder(v -> { query = v; scroll = 0; });
+            btn(px + pw - 8 - wReload, y, wReload, 16, "Reload", this::reloadAll);
+            return;
+        }
+        int wS = (int) (avail * 0.24), wSort = (int) (avail * 0.17), wP = (int) (avail * 0.21), wC = avail - wS - wSort - wP - wReload - 16;
+        EditBox s = box(x, y, wS, "Search item...", query);
+        s.setResponder(v -> { query = v; scroll = 0; });
+        x += wS + 4;
+        btn(x, y, wSort, 16, "Sort: " + (cfg().sort.equals("CONFIDENCE") ? "Conf" : cfg().sort.equals("ROI") ? "ROI" : "Profit"), () -> {
             cfg().sort = switch (cfg().sort) { case "PROFIT" -> "ROI"; case "ROI" -> "CONFIDENCE"; default -> "PROFIT"; };
             cfg().save(); scroll = 0; rebuild();
-        }).bounds(x, y - 1, wSort, 18).build());
+        });
         x += wSort + 4;
-
-        addRenderableWidget(Button.builder(Component.literal("Min profit: " + money(cfg().minProfit)), b -> {
+        btn(x, y, wP, 16, "Min $ " + money(cfg().minProfit), () -> {
             cfg().minProfit = nextD(cfg().minProfit, PROFITS); cfg().save(); recompute(); rebuild();
-        }).bounds(x, y - 1, wProfit, 18).build());
-        x += wProfit + 4;
-
-        addRenderableWidget(Button.builder(Component.literal("Min conf: " + cfg().minConfidence + "%"), b -> {
+        });
+        x += wP + 4;
+        btn(x, y, wC, 16, "Conf>=" + cfg().minConfidence, () -> {
             cfg().minConfidence = nextI(cfg().minConfidence, CONFS); cfg().save(); recompute(); rebuild();
-        }).bounds(x, y - 1, wConf, 18).build());
-        x += wConf + 4;
+        });
+        btn(px + pw - 8 - wReload, y, wReload, 16, "Reload", this::reloadAll);
+    }
 
-        addRenderableWidget(Button.builder(Component.literal("Reload"), b -> { store().load(); recompute(); rebuild(); })
-                .bounds(x, y - 1, wReload, 18).build());
+    private void reloadAll() { store().load(); recompute(); rebuild(); }
+
+    private void buildWatch() {
+        int y = py + 46, x = px + 8;
+        watchName = box(x, y, 180, "Item name (e.g. elytra)", "");
+        watchMax = box(x + 184, y, 100, "Max /unit (e.g. 5k)", "");
+        btn(x + 288, y, 60, 16, "+ Watch", () -> {
+            try {
+                String n = watchName.getValue().trim();
+                double m = Store.parsePrice(watchMax.getValue());
+                if (n.isEmpty() || m <= 0) return;
+                Config.WatchItem w = new Config.WatchItem();
+                w.name = n; w.maxUnit = m;
+                cfg().watch.add(w);
+                cfg().save(); recompute(); rebuild();
+            } catch (Exception ignored) { }
+        });
+        for (int i = 0; i < Math.min(8, cfg().watch.size()); i++) {
+            final int idx = i;
+            btn(px + pw - 26, py + 68 + i * 22 + 3, 16, 14, "x", () -> {
+                cfg().watch.remove(idx); cfg().save(); recompute(); rebuild();
+            });
+        }
+    }
+
+    private void buildTools() {
+        int lx = px + 8, rx = px + pw / 2 + 4, w = pw / 2 - 12;
+        calcBuy = box(lx, py + 52, w, "Buy price (e.g. 12k)", calcBuy == null ? "" : calcBuy.getValue());
+        calcSell = box(lx, py + 72, w, "Sell price (e.g. 15k)", calcSell == null ? "" : calcSell.getValue());
+
+        logBox = box(rx, py + 52, w - 44, "Profit made (e.g. 5k)", "");
+        btn(rx + w - 40, py + 52, 40, 16, "Log", () -> {
+            try {
+                double v = Store.parsePrice(logBox.getValue());
+                Tools.sessionTotal += v; Tools.sessionLogs++;
+                logBox.setValue("");
+            } catch (Exception ignored) { }
+        });
+
+        timerLabel = box(lx, py + 154, w - 74, "Timer label", "");
+        timerMin = box(lx + w - 70, py + 154, 40, "min", "");
+        btn(lx + w - 26, py + 154, 26, 16, "Go", () -> {
+            try {
+                double m = Double.parseDouble(timerMin.getValue().trim());
+                if (m <= 0) return;
+                String l = timerLabel.getValue().trim();
+                Tools.timers.add(new Tools.Timer(l.isEmpty() ? "timer" : l, System.currentTimeMillis() + (long) (m * 60_000)));
+                timerLabel.setValue(""); timerMin.setValue("");
+            } catch (Exception ignored) { }
+        });
     }
 
     private void buildSettings() {
-        int bx = px + pw - 8 - 110;
-        int y = py + 54;
-        addRenderableWidget(Button.builder(Component.literal(fmtPct(cfg().feeRatePercent)), b -> {
+        int lx = px + 10, rx = px + pw / 2 + 4;
+        int bw = 80, y0 = py + 36;
+        // left column
+        btn(lx + 112, y0, bw, 16, cfg().liveCapture ? "ON" : confirmLive ? "CONFIRM" : "OFF", () -> {
+            if (cfg().liveCapture) { cfg().liveCapture = false; confirmLive = false; }
+            else if (!confirmLive) { confirmLive = true; }
+            else { cfg().liveCapture = true; confirmLive = false; }
+            cfg().save(); rebuild();
+        });
+        btn(lx + 112, y0 + 22, bw, 16, cfg().chatAlerts ? "ON" : "OFF", () -> { cfg().chatAlerts = !cfg().chatAlerts; cfg().save(); rebuild(); });
+        kwBox = box(lx + 112, y0 + 44, bw, "keyword", cfg().captureKeyword);
+        kwBox.setResponder(v -> { if (!v.isBlank()) cfg().captureKeyword = v.trim(); });
+        btn(lx + 112, y0 + 66, bw, 16, fmtPct(cfg().feeRatePercent), () -> {
             cfg().feeRatePercent = nextD(cfg().feeRatePercent, new double[]{0, 1, 2, 3, 5, 8, 10}); cfg().save(); recompute(); rebuild();
-        }).bounds(bx, y, 110, 18).build());
-        y += 26;
-        addRenderableWidget(Button.builder(Component.literal(cfg().feeVerified ? "Verified: YES" : "Verified: NO"), b -> {
-            cfg().feeVerified = !cfg().feeVerified; cfg().save(); recompute(); rebuild();
-        }).bounds(bx, y, 110, 18).build());
-        y += 26;
-        addRenderableWidget(Button.builder(Component.literal(cfg().maxAgeDays + " days"), b -> {
+        });
+        btn(lx + 112, y0 + 88, bw, 16, cfg().feeVerified ? "YES" : "NO", () -> { cfg().feeVerified = !cfg().feeVerified; cfg().save(); recompute(); rebuild(); });
+        // right column
+        btn(rx + 112, y0, bw, 16, cfg().maxAgeDays + " days", () -> {
             cfg().maxAgeDays = nextI(cfg().maxAgeDays, new int[]{3, 7, 14, 30, 60}); cfg().save(); recompute(); rebuild();
-        }).bounds(bx, y, 110, 18).build());
-        y += 26;
-        addRenderableWidget(Button.builder(Component.literal(fmtPct(cfg().undercutPercent)), b -> {
+        });
+        btn(rx + 112, y0 + 22, bw, 16, fmtPct(cfg().undercutPercent), () -> {
             cfg().undercutPercent = nextD(cfg().undercutPercent, new double[]{0, 1, 2, 5, 10}); cfg().save(); recompute(); rebuild();
-        }).bounds(bx, y, 110, 18).build());
-        y += 26;
-        addRenderableWidget(Button.builder(Component.literal(cfg().minSamples + " records"), b -> {
+        });
+        btn(rx + 112, y0 + 44, bw, 16, cfg().minSamples + " records", () -> {
             cfg().minSamples = nextI(cfg().minSamples, new int[]{2, 3, 5, 8}); cfg().save(); recompute(); rebuild();
-        }).bounds(bx, y, 110, 18).build());
+        });
+        btn(rx + 112, y0 + 66, bw, 16, "Clear", () -> { store().clearCaptured(); recompute(); rebuild(); });
+        btn(rx + 112, y0 + 88, bw, 16, "Dump", () -> { Capture.dumpRequested = true; });
     }
 
     // ---------- helpers ----------
@@ -152,18 +264,11 @@ public class FlipScreen extends Screen {
         return String.format(Locale.ROOT, "%,.0f", v);
     }
 
-    private String age(long ts) {
-        if (ts <= 0) return "unknown time";
-        double d = (now - ts) / 86_400_000.0;
-        if (d < 1) return String.format(Locale.ROOT, "%.0fh ago", Math.max(0, d * 24));
-        return String.format(Locale.ROOT, "%.0fd ago", d);
-    }
-
     private static String confLabel(int c) { return c >= 70 ? "High" : c >= 40 ? "Med" : "Low"; }
-    private static int confColor(int c) { return c >= 70 ? C_GOOD : c >= 40 ? C_WARN : C_BAD; }
+    private static int confColor(int c) { return c >= 70 ? GOOD : c >= 40 ? WARN : BAD; }
 
-    private int seg(GuiGraphics g, String s, int x, int y, int color) {
-        g.drawString(font, s, x, y, color);
+    private int t(GuiGraphics g, String s, int x, int y, int color, float a) {
+        g.drawString(font, s, x, y, Draw.mul(color, a));
         return x + font.width(s);
     }
 
@@ -175,7 +280,7 @@ public class FlipScreen extends Screen {
             default -> Comparator.comparing((Analysis a) -> a.estimatedNetProfit() == null ? -1e18 : a.estimatedNetProfit());
         };
         return analyses.stream()
-                .filter(a -> tab == Tab.BEST ? a.recommendation() == Rec.BUY_CANDIDATE : a.recommendation() != Rec.BUY_CANDIDATE)
+                .filter(a -> tab == Tab.FLIPS ? a.recommendation() == Rec.BUY_CANDIDATE : a.recommendation() != Rec.BUY_CANDIDATE)
                 .filter(a -> q.isEmpty() || a.rec().item().toLowerCase(Locale.ROOT).contains(q))
                 .sorted(cmp.reversed())
                 .collect(Collectors.toList());
@@ -186,16 +291,18 @@ public class FlipScreen extends Screen {
         return history.stream().filter(h -> q.isEmpty() || h.label().toLowerCase(Locale.ROOT).contains(q)).collect(Collectors.toList());
     }
 
-    private static final int ROW_H = 30;
-
     private int rowCount() {
-        return switch (tab) { case HISTORY -> visibleHistory().size(); case SETTINGS -> 0; default -> visibleAnalyses().size(); };
+        return switch (tab) {
+            case MARKET -> visibleHistory().size();
+            case FLIPS, AVOID -> visibleAnalyses().size();
+            default -> 0;
+        };
     }
 
     // ---------- input ----------
     @Override
     public boolean mouseScrolled(double mx, double my, double sx, double sy) {
-        if (tab != Tab.SETTINGS) {
+        if (tab == Tab.FLIPS || tab == Tab.AVOID || tab == Tab.MARKET) {
             int max = Math.max(0, rowCount() * ROW_H - (listBottom - listTop));
             scroll = (int) Math.max(0, Math.min(max, scroll - sy * 16));
             return true;
@@ -212,102 +319,183 @@ public class FlipScreen extends Screen {
     @Override
     public boolean isPauseScreen() { return false; }
 
-    // ---------- rendering ----------
+    // ---------- rendering (everything except widgets is drawn here, beneath the widgets) ----------
     @Override
     public void renderBackground(GuiGraphics g, int mx, int my, float delta) {
-        super.renderBackground(g, mx, my, delta);
-        g.fill(px, py, px + pw, py + ph, C_PANEL);
-        g.fill(px, py, px + pw, py + 20, C_HEAD);
-        g.fill(px, py + 20, px + pw, py + 21, C_ACCENT);
+        super.renderBackground(g, mx, my, delta); // vanilla blur (see Options > Accessibility > Menu Background Blurriness)
+        long n = System.currentTimeMillis();
+        float oa = Math.min(1f, (n - openedAt) / 300f);
+        float ca = Math.min(1f, (n - contentAt) / 220f) * oa;
+        chromeAlpha = oa;
+
+        g.fill(0, 0, width, height, Draw.mul(0xFF040812, 0.40f * oa));
+        Draw.panel(g, px, py, px + pw, py + ph, 8, Draw.mul(ACCENT_DIM, oa), Draw.mul(BG, oa));
+
+        // header
+        int tx = t(g, "DONUT", px + 10, py + 8, ACCENT, oa);
+        t(g, " FLIP SCANNER", tx, py + 8, TEXT, oa);
+        String pill = cfg().liveCapture ? (Capture.scanning ? "LIVE: scanning" : "LIVE: waiting") : "OFFLINE";
+        int pillColor = cfg().liveCapture ? (Capture.scanning ? GOOD : WARN) : DIM;
+        int pwid = font.width(pill) + 12;
+        Draw.round(g, px + pw - 10 - pwid, py + 5, px + pw - 10, py + 18, 6, Draw.mul(0xFF16264A, oa));
+        t(g, pill, px + pw - 10 - pwid + 6, py + 8, pillColor, oa);
+
+        // animated tab underline
+        float target = px + 8 + tab.ordinal() * tabW;
+        indX += (target - indX) * 0.25f;
+        Draw.round(g, (int) indX + 4, py + 41, (int) indX + tabW - 6, py + 43, 1, Draw.mul(ACCENT, oa));
+
+        for (int[] f : fields) Draw.round(g, f[0], f[1], f[0] + f[2], f[1] + f[3], 5, Draw.mul(FIELD, oa));
+
+        switch (tab) {
+            case FLIPS, AVOID -> { statusLine(g, ca); drawAnalyses(g, ca); }
+            case MARKET -> { statusLine(g, ca); drawHistory(g, ca); }
+            case WATCH -> drawWatch(g, ca);
+            case TOOLS -> drawTools(g, ca);
+            case SETTINGS -> drawSettings(g, ca);
+        }
     }
 
-    @Override
-    public void render(GuiGraphics g, int mx, int my, float delta) {
-        super.render(g, mx, my, delta);
-        g.drawString(font, "DONUT FLIP SCANNER", px + 8, py + 6, C_ACCENT);
-        String mode = "OFFLINE MODE | live scan: DISABLED (no staff approval)";
-        g.drawString(font, mode, px + pw - 8 - font.width(mode), py + 6, C_DIM);
-
-        if (tab == Tab.SETTINGS) { renderSettings(g); return; }
-
-        // status + legend
-        g.drawString(font, store().status, px + 8, py + 70, store().records.isEmpty() ? C_WARN : C_DIM);
-        int lx = px + pw - 8 - font.width("Observed  ~Estimate");
-        lx = seg(g, "Observed  ", lx, py + 70, C_TEXT);
-        seg(g, "~Estimate", lx, py + 70, C_EST);
-
-        g.enableScissor(px + 4, listTop, px + pw - 4, listBottom);
-        if (tab == Tab.HISTORY) renderHistory(g); else renderAnalyses(g);
-        g.disableScissor();
+    private void statusLine(GuiGraphics g, float a) {
+        String s = cfg().liveCapture ? Capture.detail : store().status + " | live capture off";
+        t(g, font.plainSubstrByWidth(s, pw - 130), px + 10, py + 68, store().records.isEmpty() ? WARN : DIM, a);
+        int lx = px + pw - 10 - font.width("Observed  ~Estimate");
+        lx = t(g, "Observed  ", lx, py + 68, TEXT, a);
+        t(g, "~Estimate", lx, py + 68, EST, a);
     }
 
-    private void renderAnalyses(GuiGraphics g) {
+    private void drawAnalyses(GuiGraphics g, float a) {
         List<Analysis> rows = visibleAnalyses();
+        g.enableScissor(px + 6, listTop, px + pw - 6, listBottom);
         if (rows.isEmpty()) {
             String msg = store().records.isEmpty()
-                    ? "No data. Add recorded listings to config/donutflipscanner/import.csv and press Reload."
-                    : (tab == Tab.BEST ? "No flips meet your thresholds." : "Nothing to show here.");
-            g.drawString(font, msg, px + 12, listTop + 8, C_DIM);
-            return;
+                    ? "No data yet. Turn on Live capture in Settings and browse the AH, or fill import.csv."
+                    : (tab == Tab.FLIPS ? "No flips meet your thresholds." : "Nothing to show here.");
+            t(g, font.plainSubstrByWidth(msg, pw - 24), px + 12, listTop + 8, DIM, a);
         }
         int y = listTop - scroll;
         for (int i = 0; i < rows.size(); i++, y += ROW_H) {
             if (y + ROW_H < listTop || y > listBottom) continue;
-            Analysis a = rows.get(i);
-            g.fill(px + 4, y, px + pw - 4, y + ROW_H - 2, i % 2 == 0 ? C_ROW : C_ROW_ALT);
+            Analysis r = rows.get(i);
+            Draw.round(g, px + 6, y, px + pw - 10, y + ROW_H - 3, 5, Draw.mul(i % 2 == 0 ? ROW : ROW2, a));
+            int badgeColor = r.recommendation() == Rec.BUY_CANDIDATE ? GOOD : r.recommendation() == Rec.AVOID ? BAD : WARN;
+            String badge = r.recommendation().label;
+            t(g, badge, px + pw - 16 - font.width(badge), y + 3, badgeColor, a);
+            t(g, font.plainSubstrByWidth(Analyzer.label(r.rec()), pw - 40 - font.width(badge)), px + 12, y + 3, TEXT, a);
 
-            String name = Analyzer.label(a.rec());
-            g.drawString(font, name, px + 10, y + 4, C_TEXT);
-            int badgeColor = a.recommendation() == Rec.BUY_CANDIDATE ? C_GOOD : a.recommendation() == Rec.AVOID ? C_BAD : C_WARN;
-            String badge = a.recommendation().label;
-            g.drawString(font, badge, px + pw - 10 - font.width(badge), y + 4, badgeColor);
-
-            int x = px + 10, ty = y + 16;
-            x = seg(g, "Listed " + money(a.observedListingPrice()), x, ty, C_TEXT);
-            if (a.estimatedMarketPrice() == null) {
-                seg(g, "   " + a.reason(), x, ty, C_DIM);
+            int x = px + 12, ty = y + 13;
+            x = t(g, "List " + money(r.observedListingPrice()), x, ty, TEXT, a);
+            if (r.estimatedMarketPrice() == null) {
+                t(g, "  " + r.reason(), x, ty, DIM, a);
             } else {
-                x = seg(g, "  Resale ~" + money(a.suggestedResalePrice()), x, ty, C_EST);
-                double net = a.estimatedNetProfit();
-                x = seg(g, "  Net ~" + (net >= 0 ? "+" : "") + money(net), x, ty, net >= 0 ? C_GOOD : C_BAD);
-                x = seg(g, "  ROI ~" + String.format(Locale.ROOT, "%.1f%%", a.roiPercent()), x, ty, C_EST);
-                x = seg(g, "  Conf " + confLabel(a.confidence()) + " " + a.confidence() + "%", x, ty, confColor(a.confidence()));
-                seg(g, "  n=" + a.sampleSize() + " " + age(a.lastUpdated()), x, ty, C_DIM);
+                double net = r.estimatedNetProfit();
+                x = t(g, "  ~Sell " + money(r.suggestedResalePrice()), x, ty, EST, a);
+                x = t(g, "  ~Net " + (net >= 0 ? "+" : "") + money(net), x, ty, net >= 0 ? GOOD : BAD, a);
+                x = t(g, "  ~ROI " + String.format(Locale.ROOT, "%.0f%%", r.roiPercent()), x, ty, EST, a);
+                t(g, "  " + confLabel(r.confidence()) + " " + r.confidence() + "% n" + r.sampleSize(), x, ty, confColor(r.confidence()), a);
             }
         }
+        g.disableScissor();
+        scrollbar(g, rows.size(), a);
     }
 
-    private void renderHistory(GuiGraphics g) {
+    private void drawHistory(GuiGraphics g, float a) {
         List<HistoryRow> rows = visibleHistory();
-        if (rows.isEmpty()) { g.drawString(font, "No records.", px + 12, listTop + 8, C_DIM); return; }
+        g.enableScissor(px + 6, listTop, px + pw - 6, listBottom);
+        if (rows.isEmpty()) t(g, "No records.", px + 12, listTop + 8, DIM, a);
         int y = listTop - scroll;
         for (int i = 0; i < rows.size(); i++, y += ROW_H) {
             if (y + ROW_H < listTop || y > listBottom) continue;
             HistoryRow h = rows.get(i);
-            g.fill(px + 4, y, px + pw - 4, y + ROW_H - 2, i % 2 == 0 ? C_ROW : C_ROW_ALT);
-            g.drawString(font, h.label(), px + 10, y + 4, C_TEXT);
-            int x = px + 10, ty = y + 16;
-            x = seg(g, "Records " + h.count(), x, ty, C_TEXT);
-            x = seg(g, "  Median/unit ~" + money(h.medianUnit()), x, ty, C_EST);
-            x = seg(g, "  Range " + money(h.minUnit()) + " - " + money(h.maxUnit()), x, ty, C_TEXT);
-            x = seg(g, "  Conf " + confLabel(h.confidence()), x, ty, confColor(h.confidence()));
-            seg(g, "  Last " + (h.lastUpdated() <= 0 ? "unknown" : Instant.ofEpochMilli(h.lastUpdated()).atZone(ZoneOffset.UTC).toLocalDate().toString()), x, ty, C_DIM);
+            Draw.round(g, px + 6, y, px + pw - 10, y + ROW_H - 3, 5, Draw.mul(i % 2 == 0 ? ROW : ROW2, a));
+            t(g, font.plainSubstrByWidth(h.label(), pw - 30), px + 12, y + 3, TEXT, a);
+            int x = px + 12, ty = y + 13;
+            x = t(g, "n=" + h.count(), x, ty, TEXT, a);
+            x = t(g, "  ~Median " + money(h.medianUnit()) + "/u", x, ty, EST, a);
+            x = t(g, "  Range " + money(h.minUnit()) + "-" + money(h.maxUnit()), x, ty, TEXT, a);
+            t(g, "  " + confLabel(h.confidence()), x, ty, confColor(h.confidence()), a);
+        }
+        g.disableScissor();
+        scrollbar(g, rows.size(), a);
+    }
+
+    private void scrollbar(GuiGraphics g, int rows, float a) {
+        int total = rows * ROW_H, view = listBottom - listTop;
+        if (total <= view) return;
+        int barH = Math.max(14, view * view / total);
+        int barY = listTop + (int) ((view - barH) * (scroll / (double) (total - view)));
+        Draw.round(g, px + pw - 8, barY, px + pw - 5, barY + barH, 1, Draw.mul(ACCENT, a));
+    }
+
+    private void drawWatch(GuiGraphics g, float a) {
+        List<Config.WatchItem> w = cfg().watch;
+        if (w.isEmpty()) {
+            t(g, "Add items to get a chat alert when a captured listing is at or below your max price.", px + 12, py + 74, DIM, a);
+            t(g, "Alerts need Live capture ON (Settings) and Chat alerts ON.", px + 12, py + 86, DIM, a);
+            return;
+        }
+        for (int i = 0; i < Math.min(8, w.size()); i++) {
+            int y = py + 68 + i * 22;
+            Draw.round(g, px + 6, y, px + pw - 10, y + 19, 5, Draw.mul(i % 2 == 0 ? ROW : ROW2, a));
+            int x = t(g, w.get(i).name, px + 12, y + 5, TEXT, a);
+            x = t(g, "  max " + money(w.get(i).maxUnit) + "/u", x, y + 5, EST, a);
+            t(g, "  " + watchInfo.get(i), x, y + 5, DIM, a);
         }
     }
 
-    private void renderSettings(GuiGraphics g) {
-        int x = px + 12, y = py + 58;
-        String[] labels = {"Marketplace fee rate", "Fee rate verified by me", "Max record age", "Resale undercut", "Min comparable records"};
-        for (String l : labels) { g.drawString(font, l, x, y, C_TEXT); y += 26; }
-        y += 6;
-        String[] notes = {
-                "Fees are only subtracted when 'Verified' is YES. Unverified fees are treated as 0 (profit may be overstated).",
-                "Prices are recorded ASKING prices, not completed sales. Resale = median of comparable records minus undercut.",
-                "Comparable = same item, attributes, durability band and stack-size band. Dissimilar items are never merged.",
-                "Live Auction House scanning is disabled: it requires explicit DonutSMP staff approval of the exact method.",
-                "This mod sends no packets/commands, automates no clicks, and cannot buy or sell anything.",
-                "Import file: config/donutflipscanner/import.csv"
-        };
-        for (String n : notes) { g.drawString(font, n, x, y, C_DIM); y += 12; }
+    private double num(EditBox b) {
+        try { return Store.parsePrice(b.getValue()); } catch (Exception e) { return Double.NaN; }
+    }
+
+    private void drawTools(GuiGraphics g, float a) {
+        int lx = px + 10, rx = px + pw / 2 + 6;
+        t(g, "FLIP CALCULATOR", lx, py + 40, ACCENT, a);
+        double buy = num(calcBuy), sell = num(calcSell), fee = cfg().effectiveFeeRate();
+        int y = py + 94;
+        if (!Double.isNaN(buy) && buy > 0) {
+            t(g, "Break-even sell ~" + money(buy / (1 - fee / 100.0)), lx, y, EST, a);
+            if (!Double.isNaN(sell)) {
+                double net = sell - sell * fee / 100.0 - buy;
+                t(g, "Net ~" + (net >= 0 ? "+" : "") + money(net) + "   ROI ~" + String.format(Locale.ROOT, "%.1f%%", net / buy * 100), lx, y + 12, net >= 0 ? GOOD : BAD, a);
+            }
+        } else {
+            t(g, "Enter a buy and sell price.", lx, y, DIM, a);
+        }
+        t(g, "Fee used: " + fmtPct(fee) + (cfg().feeVerified ? "" : " (unverified)"), lx, y + 24, DIM, a);
+
+        t(g, "TIMERS", lx, py + 140, ACCENT, a);
+        long n = System.currentTimeMillis();
+        int ty = py + 176;
+        if (Tools.timers.isEmpty()) t(g, "No active timers.", lx, ty, DIM, a);
+        for (int i = 0; i < Math.min(5, Tools.timers.size()); i++) {
+            long left = Math.max(0, Tools.timers.get(i).endAt() - n) / 1000;
+            t(g, String.format(Locale.ROOT, "%s  %d:%02d", Tools.timers.get(i).label(), left / 60, left % 60), lx, ty + i * 11, TEXT, a);
+        }
+
+        t(g, "SESSION PROFIT (manual log)", rx, py + 40, ACCENT, a);
+        double hrs = Math.max(1.0 / 60, (n - Tools.SESSION_START) / 3_600_000.0);
+        t(g, "Total " + (Tools.sessionTotal >= 0 ? "+" : "") + money(Tools.sessionTotal) + "  (" + Tools.sessionLogs + " logs)", rx, py + 76, Tools.sessionTotal >= 0 ? GOOD : BAD, a);
+        t(g, "~" + money(Tools.sessionTotal / hrs) + " per hour this session", rx, py + 88, EST, a);
+
+        t(g, "DATA", rx, py + 140, ACCENT, a);
+        t(g, "Captured listings: " + store().captured.size(), rx, py + 154, TEXT, a);
+        t(g, "Imported records: " + store().imported.size(), rx, py + 166, TEXT, a);
+        t(g, "Comparable groups: " + history.size(), rx, py + 178, TEXT, a);
+    }
+
+    private void drawSettings(GuiGraphics g, float a) {
+        int lx = px + 10, rx = px + pw / 2 + 4, y0 = py + 36;
+        String[] left = {"Live AH capture", "Chat alerts", "AH title keyword", "Fee rate", "Fee verified"};
+        String[] right = {"Max record age", "Resale undercut", "Min comparables", "Captured data", "Debug dump"};
+        for (int i = 0; i < 5; i++) {
+            t(g, left[i], lx, y0 + 4 + i * 22, TEXT, a);
+            t(g, right[i], rx, y0 + 4 + i * 22, TEXT, a);
+        }
+        int y = y0 + 118;
+        if (confirmLive) t(g, "Click CONFIRM only after you checked DonutSMP's rules.", lx, y, WARN, a);
+        t(g, "Live capture only READS the AH screen you open. No clicks, packets, buys.", lx, y + 12, DIM, a);
+        t(g, "Not guaranteed safe. Fees count only when 'Fee verified' is YES.", lx, y + 24, DIM, a);
+        t(g, font.plainSubstrByWidth("Capture: " + Capture.detail, pw - 24), lx, y + 36, DIM, a);
+        t(g, "Dump writes debug.txt (config/donutflipscanner) to help fix price parsing.", lx, y + 48, DIM, a);
     }
 }

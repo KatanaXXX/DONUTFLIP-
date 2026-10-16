@@ -8,13 +8,6 @@ import net.minecraft.client.KeyMapping;
 import org.lwjgl.glfw.GLFW;
 
 public class DonutFlipScannerClient implements ClientModInitializer {
-    /**
-     * Live Auction House scanning is intentionally NOT implemented. It must not be added unless
-     * DonutSMP staff have explicitly approved the specific method. This mod never sends packets,
-     * commands, clicks, or purchases.
-     */
-    public static final boolean LIVE_SCAN_APPROVED = false;
-
     public static KeyMapping OPEN_KEY;
     public static Config CONFIG;
     public static Store STORE;
@@ -33,6 +26,8 @@ public class DonutFlipScannerClient implements ClientModInitializer {
                 if (mc.screen instanceof FlipScreen) mc.setScreen(null);
                 else if (mc.screen == null) mc.setScreen(new FlipScreen());
             }
+            Tools.tick(mc);
+            Capture.tick(mc);
         });
     }
 }

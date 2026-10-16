@@ -30,3 +30,11 @@ sampleSize / lastUpdated.
 - Loom version and plugin id `net.fabricmc.fabric-loom-remap`
 - 1.21.11 input API: `Screen.keyPressed(KeyEvent)`, `KeyMapping.matches(KeyEvent)`, `KeyMapping.Category.MISC`
 - `GuiGraphics.enableScissor/disableScissor`, `drawString(Font,String,int,int,int)`
+
+
+## v0.2
+- Blue rounded UI, fades, 6 tabs: Flips, Avoid, Market, Watch, Tools, Settings.
+- Optional passive AH capture (Settings > Live AH capture, off by default, needs CONFIRM).
+  It only reads the AH screen you open yourself. Price/title formats are guesses; use Settings > Dump
+  then send debug.txt if listings aren't detected.
+- Watchlist chat alerts, flip calculator, session profit log, timers.
