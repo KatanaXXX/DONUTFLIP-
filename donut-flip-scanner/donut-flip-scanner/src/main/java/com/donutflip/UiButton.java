@@ -18,7 +18,7 @@ final class UiButton extends Button {
     }
 
     @Override
-    public void renderWidget(GuiGraphics g, int mx, int my, float delta) {
+    public void renderContents(GuiGraphics g, int mx, int my, float delta) {
         Font f = Minecraft.getInstance().font;
         float a = FlipScreen.chromeAlpha;
         boolean hov = isHoveredOrFocused();
