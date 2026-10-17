@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "donutflipscanner",
+  "version": "${version}",
+  "name": "Donut Flip Scanner",
+  "description": "Client-side market-analysis assistant for manually observed auction listings. No automated clicks, navigation, buying, selling, or packet capture.",
+  "authors": ["You"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": { "client": ["com.donutflip.DonutFlipScannerClient"] },
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

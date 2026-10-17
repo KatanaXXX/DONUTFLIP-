@@ -1,0 +1,36 @@
+plugins {
+    id 'fabric-loom' version '1.15.5'
+}
+
+group = 'com.donutflip'
+version = '0.2.0'
+
+base {
+    archivesName = 'donut-flip-scanner'
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft 'com.mojang:minecraft:1.21.11'
+    // This release was distributed with intermediary-named source, so compile in that namespace.
+    mappings 'net.fabricmc:intermediary:1.21.11:v2'
+    modImplementation 'net.fabricmc:fabric-loader:0.19.2'
+    modImplementation 'net.fabricmc.fabric-api:fabric-api:0.141.4+1.21.11'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    withSourcesJar()
+}
+
+tasks.withType(Test).configureEach { useJUnitPlatform() }
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand version: project.version }
+}
