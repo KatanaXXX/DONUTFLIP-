@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "riptide_knife_lab",
+  "version": "${version}",
+  "name": "RIPTIDE: KNIFE LAB",
+  "description": "Client-side CS-inspired knife customization for Minecraft.",
+  "authors": ["RIPTIDE"],
+  "license": "All-Rights-Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.riptide.knifelab.client.RiptideKnifeLabClient"]
+  },
+  "mixins": ["riptide_knife_lab.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
